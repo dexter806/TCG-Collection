@@ -55,7 +55,15 @@
 
       <div class="editor-current" id="editorCurrent"></div>
 
-      <input type="text" id="searchInput" class="search-input" placeholder="Search for a card by name…">
+      <input type="text" id="filterName" class="search-input" placeholder="Card name…">
+
+      <div class="filter-grid">
+        <select id="filterSet" class="filter-select"><option value="">Any set</option></select>
+        <input type="text" id="filterNumber" class="filter-input" placeholder="Card #">
+        <select id="filterType" class="filter-select"><option value="">Any type</option></select>
+        <select id="filterRarity" class="filter-select"><option value="">Any rarity</option></select>
+      </div>
+
       <div class="search-results" id="searchResults"></div>
     </div>
   </div>

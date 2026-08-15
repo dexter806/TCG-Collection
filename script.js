@@ -90,20 +90,57 @@ async function fetchCardByNameAndSet(name, setId){
   return (json && json.data && json.data[0]) || null;
 }
 
-/* Cards printed today often show as "169/142" — the part after the
-   slash is the set's total card count, not part of the card's own
-   number. The API only stores the "169" part, so strip the rest. */
-function normalizeCardNumber(raw){
-  return raw ? raw.split("/")[0].trim() : "";
+/* Cards today are printed like "169/142" — the part after the slash is
+   the SET's total card count, not part of the card's own number. Rather
+   than just discarding it, use it: sets almost always have a unique
+   total, so we can auto-detect which exact set you mean from it —
+   without you having to also pick it from the Set dropdown. */
+function parseNumberInput(raw){
+  if(!raw) return { number: "", total: null };
+  const [num, total] = raw.split("/").map(s => s.trim());
+  return { number: num || "", total: total || null };
+}
+
+function findSetsByTotal(total){
+  const n = parseInt(total, 10);
+  if(Number.isNaN(n)) return [];
+  return SETS.filter(s => s.printedTotal === n || s.total === n);
 }
 
 /* Builds a combined Lucene-style query from whichever filters are filled
    in. Any combination works — fill in just one field, or several at once. */
-function buildSearchQuery({ name, setId, number, type, rarity }){
+function buildSearchQuery({ name, setId, numberInput, type, rarity }){
   const parts = [];
-  if(name)   parts.push(`name:${name}*`);
-  if(setId)  parts.push(`set.id:${setId}`);
-  if(number) parts.push(`number:${normalizeCardNumber(number)}`);
+  if(name) parts.push(`name:${name}*`);
+
+  const { number, total } = parseNumberInput(numberInput);
+
+  // An explicit Set dropdown choice always wins. Otherwise, if a "/total"
+  // was typed, try to auto-detect the exact set from it.
+  let effectiveSetId = setId;
+  if(!effectiveSetId && total && SETS){
+    const matches = findSetsByTotal(total);
+    if(matches.length === 1){
+      effectiveSetId = matches[0].id;
+    } else if(matches.length > 1){
+      parts.push(`(${matches.map(s => `set.id:${s.id}`).join(" OR ")})`);
+    }
+  }
+  if(effectiveSetId) parts.push(`set.id:${effectiveSetId}`);
+
+  if(number){
+    // The dataset isn't perfectly consistent about zero-padding card
+    // numbers (some sets store "017", others "17") — try a couple of
+    // reasonable variants rather than failing on an exact mismatch.
+    const unpadded = String(parseInt(number, 10));
+    const padded3 = number.padStart(3, "0");
+    const variants = [...new Set([number, unpadded, padded3])];
+    parts.push(variants.length > 1
+      ? `(${variants.map(v => `number:${v}`).join(" OR ")})`
+      : `number:${number}`
+    );
+  }
+
   if(type)   parts.push(`types:${type}`);
   if(rarity) parts.push(`rarity:"${rarity}"`);
   return parts.join(" ");
@@ -275,11 +312,11 @@ function closeSlotEditor(){
 
 function currentFilters(){
   return {
-    name:   document.getElementById("filterName").value.trim(),
-    setId:  document.getElementById("filterSet").value,
-    number: document.getElementById("filterNumber").value.trim(),
-    type:   document.getElementById("filterType").value,
-    rarity: document.getElementById("filterRarity").value,
+    name:        document.getElementById("filterName").value.trim(),
+    setId:       document.getElementById("filterSet").value,
+    numberInput: document.getElementById("filterNumber").value.trim(),
+    type:        document.getElementById("filterType").value,
+    rarity:      document.getElementById("filterRarity").value,
   };
 }
 
@@ -287,7 +324,7 @@ async function runSearch(){
   const resultsEl = document.getElementById("searchResults");
   const filters = currentFilters();
 
-  if(!filters.name && !filters.setId && !filters.number && !filters.type && !filters.rarity){
+  if(!filters.name && !filters.setId && !filters.numberInput && !filters.type && !filters.rarity){
     resultsEl.innerHTML = "";
     return;
   }
@@ -296,7 +333,7 @@ async function runSearch(){
   const results = await searchCards(filters);
 
   if(!results.length){
-    resultsEl.innerHTML = `<div class="search-status">No cards found — try loosening a filter.</div>`;
+    resultsEl.innerHTML = `<div class="search-status">No cards found. If this is a very new set, it may not be indexed yet — try searching by just the name, or double-check the set/number.</div>`;
     return;
   }
 

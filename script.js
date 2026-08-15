@@ -211,9 +211,13 @@ function renderPage(){
 
     pocket.className = "pocket filled" + (isHolo(card) ? " holo" : "") + (editMode ? " editable" : "");
     pocket.innerHTML = `<img src="${card.images.small}" alt="${card.name}">`;
-    pocket.addEventListener("click", () => {
-      editMode ? openSlotEditor(i) : openDetail(card);
-    });
+
+    if(editMode){
+      attachDragHandlers(pocket, i);
+    } else {
+      pocket.addEventListener("click", () => openDetail(card));
+    }
+
     grid.appendChild(pocket);
   });
 
@@ -222,6 +226,82 @@ function renderPage(){
     `PAGE ${currentPage + 1} OF ${PAGES.length}`;
   document.getElementById("prevPage").disabled = currentPage === 0;
   document.getElementById("nextPage").disabled = currentPage === PAGES.length - 1;
+}
+
+/* ============================================
+   DRAG TO REARRANGE
+   Works with mouse, touch, and pen via the Pointer
+   Events API. A small movement threshold tells a
+   real drag apart from a simple tap — a tap still
+   opens the slot editor like before; a drag swaps
+   (or moves, if the target was empty) the two cards.
+   ============================================ */
+const DRAG_THRESHOLD = 6; // px of movement before it counts as a drag, not a tap
+
+function attachDragHandlers(pocketEl, index){
+  pocketEl.style.touchAction = "none"; // stop touch-drag from scrolling the page
+
+  pocketEl.addEventListener("pointerdown", (downEvent) => {
+    const startX = downEvent.clientX;
+    const startY = downEvent.clientY;
+    let moved = false;
+    let ghost = null;
+
+    function onMove(moveEvent){
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+
+      if(!moved && Math.hypot(dx, dy) > DRAG_THRESHOLD){
+        moved = true;
+        const img = pocketEl.querySelector("img");
+        ghost = document.createElement("img");
+        ghost.src = img.src;
+        ghost.className = "drag-ghost";
+        document.body.appendChild(ghost);
+        pocketEl.classList.add("dragging");
+      }
+
+      if(moved){
+        ghost.style.left = `${moveEvent.clientX}px`;
+        ghost.style.top = `${moveEvent.clientY}px`;
+
+        document.querySelectorAll(".pocket.drop-target").forEach(p => p.classList.remove("drop-target"));
+        const under = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+        const targetPocket = under && under.closest(".pocket");
+        if(targetPocket && targetPocket !== pocketEl) targetPocket.classList.add("drop-target");
+      }
+    }
+
+    function onUp(upEvent){
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.querySelectorAll(".pocket.drop-target").forEach(p => p.classList.remove("drop-target"));
+      pocketEl.classList.remove("dragging");
+
+      if(!moved){
+        openSlotEditor(index); // it was just a tap
+        return;
+      }
+
+      if(ghost) ghost.remove();
+
+      const under = document.elementFromPoint(upEvent.clientX, upEvent.clientY);
+      const targetPocket = under && under.closest(".pocket");
+      if(targetPocket){
+        const grid = document.getElementById("pocketGrid");
+        const targetIndex = Array.from(grid.children).indexOf(targetPocket);
+        if(targetIndex >= 0 && targetIndex !== index){
+          const slots = PAGES[currentPage].slots;
+          [slots[index], slots[targetIndex]] = [slots[targetIndex], slots[index]];
+          saveState();
+          renderPage();
+        }
+      }
+    }
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
 }
 
 function openDetail(card){

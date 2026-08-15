@@ -40,8 +40,29 @@ let editingSlotIndex = null; // which pocket the slot editor is currently open f
    POKÉMON TCG API
    Free, no key required for light/personal use.
    https://docs.pokemontcg.io
+
+   Note: this API is English-card data only —
+   there's no language field to filter by.
    ============================================ */
 const API_BASE = "https://api.pokemontcg.io/v2/cards";
+const SETS_API = "https://api.pokemontcg.io/v2/sets";
+
+const TYPES = ["Colorless","Darkness","Dragon","Fairy","Fighting","Fire","Grass","Lightning","Metal","Psychic","Water"];
+const RARITIES = ["Common","Uncommon","Rare","Rare Holo","Rare Holo EX","Rare Holo GX","Rare Holo V","Rare Holo VMAX","Rare Ultra","Rare Secret","Rare Rainbow","Rare Shiny","Rare Shiny GX","Rare Shining","Rare BREAK","Rare ACE","Rare Prime","Rare Prism Star","Rare Holo Star","Rare Holo LV.X","Amazing Rare","LEGEND","Promo"];
+
+let SETS = []; // populated once from the API, used to fill the Set dropdown
+
+async function fetchSets(){
+  try{
+    const res = await fetch(`${SETS_API}?orderBy=releaseDate&pageSize=250`);
+    if(!res.ok) throw new Error("API error " + res.status);
+    const json = await res.json();
+    return json.data || [];
+  }catch(err){
+    console.error("Couldn't fetch sets:", err);
+    return [];
+  }
+}
 
 async function fetchCardByNameAndSet(name, setId){
   try{
@@ -56,11 +77,23 @@ async function fetchCardByNameAndSet(name, setId){
   }
 }
 
-async function searchCards(term){
-  if(!term.trim()) return [];
+/* Builds a combined Lucene-style query from whichever filters are filled
+   in. Any combination works — fill in just one field, or several at once. */
+function buildSearchQuery({ name, setId, number, type, rarity }){
+  const parts = [];
+  if(name)   parts.push(`name:${name}*`);
+  if(setId)  parts.push(`set.id:${setId}`);
+  if(number) parts.push(`number:${number}`);
+  if(type)   parts.push(`types:${type}`);
+  if(rarity) parts.push(`rarity:"${rarity}"`);
+  return parts.join(" ");
+}
+
+async function searchCards(filters){
+  const query = buildSearchQuery(filters);
+  if(!query) return [];
   try{
-    const q = encodeURIComponent(`name:${term}*`);
-    const res = await fetch(`${API_BASE}?q=${q}&pageSize=16&orderBy=name`);
+    const res = await fetch(`${API_BASE}?q=${encodeURIComponent(query)}&pageSize=20&orderBy=name`);
     if(!res.ok) throw new Error("API error " + res.status);
     const json = await res.json();
     return json.data || [];
@@ -106,7 +139,7 @@ async function buildDemoPages(){
 }
 
 /* ============================================
-   RENDERING
+   RENDERING — BINDER
    ============================================ */
 function renderPage(){
   const grid = document.getElementById("pocketGrid");
@@ -162,6 +195,20 @@ function closeDetail(){
    ============================================ */
 let searchDebounce = null;
 
+function populateFilterDropdowns(){
+  const setSel = document.getElementById("filterSet");
+  setSel.innerHTML = `<option value="">Any set</option>` +
+    SETS.map(s => `<option value="${s.id}">${s.name} (${s.series})</option>`).join("");
+
+  const typeSel = document.getElementById("filterType");
+  typeSel.innerHTML = `<option value="">Any type</option>` +
+    TYPES.map(t => `<option value="${t}">${t}</option>`).join("");
+
+  const raritySel = document.getElementById("filterRarity");
+  raritySel.innerHTML = `<option value="">Any rarity</option>` +
+    RARITIES.map(r => `<option value="${r}">${r}</option>`).join("");
+}
+
 function openSlotEditor(slotIndex){
   editingSlotIndex = slotIndex;
   const card = PAGES[currentPage].slots[slotIndex];
@@ -187,10 +234,14 @@ function openSlotEditor(slotIndex){
     currentWrap.innerHTML = "";
   }
 
-  document.getElementById("searchInput").value = "";
+  document.getElementById("filterName").value = "";
+  document.getElementById("filterSet").value = "";
+  document.getElementById("filterNumber").value = "";
+  document.getElementById("filterType").value = "";
+  document.getElementById("filterRarity").value = "";
   document.getElementById("searchResults").innerHTML = "";
   document.getElementById("slotEditor").classList.add("visible");
-  document.getElementById("searchInput").focus();
+  document.getElementById("filterName").focus();
 }
 
 function closeSlotEditor(){
@@ -198,17 +249,30 @@ function closeSlotEditor(){
   editingSlotIndex = null;
 }
 
-async function runSearch(term){
+function currentFilters(){
+  return {
+    name:   document.getElementById("filterName").value.trim(),
+    setId:  document.getElementById("filterSet").value,
+    number: document.getElementById("filterNumber").value.trim(),
+    type:   document.getElementById("filterType").value,
+    rarity: document.getElementById("filterRarity").value,
+  };
+}
+
+async function runSearch(){
   const resultsEl = document.getElementById("searchResults");
-  if(!term.trim()){
+  const filters = currentFilters();
+
+  if(!filters.name && !filters.setId && !filters.number && !filters.type && !filters.rarity){
     resultsEl.innerHTML = "";
     return;
   }
+
   resultsEl.innerHTML = `<div class="search-status">Searching…</div>`;
-  const results = await searchCards(term);
+  const results = await searchCards(filters);
 
   if(!results.length){
-    resultsEl.innerHTML = `<div class="search-status">No cards found.</div>`;
+    resultsEl.innerHTML = `<div class="search-status">No cards found — try loosening a filter.</div>`;
     return;
   }
 
@@ -218,7 +282,7 @@ async function runSearch(term){
     item.className = "search-result";
     item.innerHTML = `
       <img src="${card.images.small}" alt="${card.name}">
-      <span>${card.name} <em>${card.set.name}</em></span>
+      <span>${card.name} <em>${card.set.name} &middot; ${card.rarity || "—"}</em></span>
     `;
     item.addEventListener("click", () => {
       PAGES[currentPage].slots[editingSlotIndex] = card;
@@ -228,6 +292,11 @@ async function runSearch(term){
     });
     resultsEl.appendChild(item);
   });
+}
+
+function triggerDebouncedSearch(){
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(runSearch, 400);
 }
 
 /* ============================================
@@ -272,11 +341,11 @@ document.getElementById("slotEditor").addEventListener("click", (e) => {
   if(e.target.id === "slotEditor") closeSlotEditor();
 });
 
-document.getElementById("searchInput").addEventListener("input", (e) => {
-  clearTimeout(searchDebounce);
-  const term = e.target.value;
-  searchDebounce = setTimeout(() => runSearch(term), 400);
-});
+document.getElementById("filterName").addEventListener("input", triggerDebouncedSearch);
+document.getElementById("filterNumber").addEventListener("input", triggerDebouncedSearch);
+document.getElementById("filterSet").addEventListener("change", runSearch);
+document.getElementById("filterType").addEventListener("change", runSearch);
+document.getElementById("filterRarity").addEventListener("change", runSearch);
 
 document.addEventListener("keydown", (e) => {
   if(e.key !== "Escape") return;
@@ -289,7 +358,14 @@ document.addEventListener("keydown", (e) => {
    ============================================ */
 (async function init(){
   document.getElementById("pageIndicator").textContent = "LOADING…";
-  const saved = loadState();
+
+  const [saved, sets] = await Promise.all([
+    Promise.resolve(loadState()),
+    fetchSets(),
+  ]);
+  SETS = sets;
+  populateFilterDropdowns();
+
   PAGES = saved && saved.length ? saved : await buildDemoPages();
   if(!saved) saveState();
   renderPage();

@@ -390,6 +390,15 @@ body{
 .filter-input::placeholder{ color: var(--paper-dim); }
 .filter-select{ cursor: pointer; }
 
+/* The dropdown POPUP LIST (as opposed to the closed select box) renders
+   on a native, usually light, system background in most browsers — it
+   ignores the dark theme above. Options need their own dark text/light
+   background here so they stay readable when the list is open. */
+.filter-select option{
+  color: var(--ink);
+  background: var(--paper);
+}
+
 .search-results{
   display: flex;
   flex-direction: column;

@@ -365,10 +365,30 @@ body{
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 8px;
   padding: 0.65rem 0.8rem;
-  margin-bottom: 0.8rem;
+  margin-bottom: 0.6rem;
 }
 .search-input:focus{ outline: 2px solid var(--holo-1); outline-offset: 1px; }
 .search-input::placeholder{ color: var(--paper-dim); }
+
+.filter-grid{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+}
+.filter-select, .filter-input{
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--paper);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  padding: 0.5rem 0.5rem;
+  width: 100%;
+}
+.filter-select:focus, .filter-input:focus{ outline: 2px solid var(--holo-1); outline-offset: 1px; }
+.filter-input::placeholder{ color: var(--paper-dim); }
+.filter-select{ cursor: pointer; }
 
 .search-results{
   display: flex;

@@ -151,9 +151,9 @@ body{
   );
   border: 1px dashed var(--pocket-line);
 }
+.pocket.empty.editable{ cursor: pointer; }
 .pocket.filled{ cursor: pointer; }
 .pocket.filled:hover{ transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.25); }
-.pocket.editable{ cursor: pointer; }
 .pocket.editable:hover{
   outline: 2px solid var(--holo-1);
   outline-offset: -1px;
@@ -172,6 +172,26 @@ body{
   width: 100%; height: 100%;
   object-fit: cover;
   display: block;
+}
+
+/* drag-to-rearrange */
+.pocket.filled.editable{ cursor: grab; }
+.pocket.dragging{ opacity: 0.3; }
+.pocket.drop-target{
+  outline: 2px solid var(--holo-2);
+  outline-offset: -2px;
+  background: rgba(199,146,250,0.14);
+}
+.drag-ghost{
+  position: fixed;
+  top: 0; left: 0;
+  width: 64px;
+  border-radius: 5px;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  opacity: 0.9;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.55);
+  z-index: 200;
 }
 
 /* holo-foil signature shimmer, only on cards flagged holo */

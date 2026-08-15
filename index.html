@@ -15,6 +15,7 @@
 
       <div class="binder-spine">
         <span class="spine-label" id="binderTitle">KANTO &middot; GEN 1</span>
+        <button class="edit-toggle" id="editToggle">Edit</button>
       </div>
 
       <div class="binder-page">
@@ -30,6 +31,7 @@
         <button class="nav-btn" id="prevPage" aria-label="Previous page">&larr;</button>
         <span class="page-indicator" id="pageIndicator">PAGE 1 OF 1</span>
         <button class="nav-btn" id="nextPage" aria-label="Next page">&rarr;</button>
+        <button class="add-page-btn" id="addPageBtn" style="display:none;">+ Page</button>
       </div>
 
     </div>
@@ -43,6 +45,18 @@
         <h2 id="detailName"></h2>
         <p id="detailSet"></p>
       </div>
+    </div>
+  </div>
+
+  <div class="slot-editor" id="slotEditor">
+    <div class="slot-editor-inner">
+      <button class="card-detail-close" id="closeSlotEditor" aria-label="Close">&times;</button>
+      <h2 class="slot-editor-title">Edit slot</h2>
+
+      <div class="editor-current" id="editorCurrent"></div>
+
+      <input type="text" id="searchInput" class="search-input" placeholder="Search for a card by name…">
+      <div class="search-results" id="searchResults"></div>
     </div>
   </div>
 

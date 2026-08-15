@@ -1,445 +1,396 @@
 /* ============================================
-   TOKENS
+   DATA MODEL
+   PAGES is an array of pages. Each page has 9
+   slots (a real 9-pocket binder page). A slot is
+   either null (empty pocket) or a full card object
+   from the Pokémon TCG API. Slots can be filled in
+   ANY order — gaps are normal, exactly like a real
+   binder page you're still building out.
+
+   Everything is saved to localStorage so your binder
+   persists between visits. First-ever visit seeds a
+   small demo page so it's not just blank.
    ============================================ */
-:root{
-  --vinyl:       #14171C;
-  --vinyl-raised:#1D2027;
-  --page-stock:  #E7E0CF;
-  --page-shadow: #C9BFA4;
-  --ink:         #2B2620;
-  --ink-dim:     #7A7263;
-  --paper:       #F3EEE2;
-  --paper-dim:   #9C9686;
-  --pocket-line: rgba(43,38,32,0.16);
 
-  --holo-1: #7EE8FA;
-  --holo-2: #C792FA;
-  --holo-3: #FFD86B;
+const STORAGE_KEY = "pokemon-binder-state";
 
-  --font-display: 'Bricolage Grotesque', sans-serif;
-  --font-body:    'Inter', sans-serif;
-  --font-mono:    'JetBrains Mono', monospace;
+const DEMO_PAGES = [
+  {
+    title: "KANTO · GEN 1",
+    lookups: [
+      { name: "Charizard", setId: "base1" },
+      null,
+      { name: "Blastoise", setId: "base1" },
+      null,
+      { name: "Venusaur", setId: "base1" },
+      null,
+      { name: "Pikachu", setId: "base1" },
+      null,
+      { name: "Mewtwo", setId: "base1" },
+    ]
+  },
+];
+
+let PAGES = [];
+let currentPage = 0;
+let editMode = false;
+let editingSlotIndex = null; // which pocket the slot editor is currently open for
+
+/* ============================================
+   POKÉMON TCG API
+   Free, no key required — but unauthenticated
+   requests share a low, strict rate limit (30/min,
+   1000/day), which is easy to hit once a page is
+   making several calls on load. If the Set dropdown
+   ever comes up empty, this is almost always why.
+
+   Optional: grab a free key at https://dev.pokemontcg.io
+   and paste it in below — it raises the limit to
+   20,000/day. Totally fine to leave blank; things
+   just get more reliable with a key in place.
+
+   Note: this API is English-card data only —
+   there's no language field to filter by.
+   ============================================ */
+const API_KEY = ""; // paste a free key here if you want higher rate limits
+const API_BASE = "https://api.pokemontcg.io/v2/cards";
+const SETS_API = "https://api.pokemontcg.io/v2/sets";
+
+const TYPES = ["Colorless","Darkness","Dragon","Fairy","Fighting","Fire","Grass","Lightning","Metal","Psychic","Water"];
+const RARITIES = ["Common","Uncommon","Rare","Rare Holo","Rare Holo EX","Rare Holo GX","Rare Holo V","Rare Holo VMAX","Rare Ultra","Rare Secret","Rare Rainbow","Rare Shiny","Rare Shiny GX","Rare Shining","Rare BREAK","Rare ACE","Rare Prime","Rare Prism Star","Rare Holo Star","Rare Holo LV.X","Amazing Rare","LEGEND","Promo"];
+
+let SETS = []; // populated once from the API, used to fill the Set dropdown
+
+/* Shared fetch helper — adds the API key if one's set, and retries once
+   on failure (covers transient network hiccups / brief rate-limit blips). */
+async function apiFetch(url, attempt = 1){
+  try{
+    const headers = API_KEY ? { "X-Api-Key": API_KEY } : {};
+    const res = await fetch(url, { headers });
+    if(!res.ok) throw new Error("API error " + res.status);
+    return await res.json();
+  }catch(err){
+    if(attempt < 2){
+      await new Promise(r => setTimeout(r, 700));
+      return apiFetch(url, attempt + 1);
+    }
+    console.error("API request failed after retry:", url, err);
+    return null;
+  }
 }
 
-*{ box-sizing: border-box; }
-html, body{ margin: 0; padding: 0; }
-body{
-  min-height: 100vh;
-  background: var(--vinyl);
-  color: var(--paper);
-  font-family: var(--font-body);
-  -webkit-font-smoothing: antialiased;
+async function fetchSets(){
+  const json = await apiFetch(`${SETS_API}?orderBy=releaseDate&pageSize=250`);
+  return json ? (json.data || []) : null; // null = totally failed, distinct from "zero results"
+}
+
+async function fetchCardByNameAndSet(name, setId){
+  const q = encodeURIComponent(`name:"${name}" set.id:${setId}`);
+  const json = await apiFetch(`${API_BASE}?q=${q}&pageSize=1`);
+  return (json && json.data && json.data[0]) || null;
+}
+
+/* Cards printed today often show as "169/142" — the part after the
+   slash is the set's total card count, not part of the card's own
+   number. The API only stores the "169" part, so strip the rest. */
+function normalizeCardNumber(raw){
+  return raw ? raw.split("/")[0].trim() : "";
+}
+
+/* Builds a combined Lucene-style query from whichever filters are filled
+   in. Any combination works — fill in just one field, or several at once. */
+function buildSearchQuery({ name, setId, number, type, rarity }){
+  const parts = [];
+  if(name)   parts.push(`name:${name}*`);
+  if(setId)  parts.push(`set.id:${setId}`);
+  if(number) parts.push(`number:${normalizeCardNumber(number)}`);
+  if(type)   parts.push(`types:${type}`);
+  if(rarity) parts.push(`rarity:"${rarity}"`);
+  return parts.join(" ");
+}
+
+async function searchCards(filters){
+  const query = buildSearchQuery(filters);
+  if(!query) return [];
+  const json = await apiFetch(`${API_BASE}?q=${encodeURIComponent(query)}&pageSize=20&orderBy=name`);
+  return json ? (json.data || []) : [];
+}
+
+function isHolo(card){
+  return /holo/i.test(card.rarity || "");
 }
 
 /* ============================================
-   TABLE SURFACE — the binder rests here
+   PERSISTENCE
    ============================================ */
-.table-surface{
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 3rem 1.5rem;
-  background:
-    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(126,232,250,0.05), transparent 60%),
-    var(--vinyl);
+function saveState(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(PAGES));
+  }catch(err){
+    console.error("Couldn't save binder:", err);
+  }
+}
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(err){
+    return null;
+  }
+}
+
+async function buildDemoPages(){
+  const pages = [];
+  for(const demoPage of DEMO_PAGES){
+    const slots = await Promise.all(
+      demoPage.lookups.map(l => l ? fetchCardByNameAndSet(l.name, l.setId) : Promise.resolve(null))
+    );
+    pages.push({ title: demoPage.title, slots });
+  }
+  return pages;
 }
 
 /* ============================================
-   BINDER
+   RENDERING — BINDER
    ============================================ */
-.binder{
-  width: 100%;
-  max-width: 620px;
-  background: var(--vinyl-raised);
-  border-radius: 14px;
-  padding: 1.4rem 1.4rem 1.1rem;
-  box-shadow:
-    0 30px 60px rgba(0,0,0,0.55),
-    0 2px 0 rgba(255,255,255,0.04) inset;
+function renderPage(){
+  const grid = document.getElementById("pocketGrid");
+  const page = PAGES[currentPage];
+  grid.innerHTML = "";
+
+  page.slots.forEach((card, i) => {
+    const pocket = document.createElement("div");
+
+    if(!card){
+      pocket.className = "pocket empty" + (editMode ? " editable" : "");
+      if(editMode){
+        pocket.innerHTML = `<span class="pocket-plus">+</span>`;
+        pocket.addEventListener("click", () => openSlotEditor(i));
+      }
+      grid.appendChild(pocket);
+      return;
+    }
+
+    pocket.className = "pocket filled" + (isHolo(card) ? " holo" : "") + (editMode ? " editable" : "");
+    pocket.innerHTML = `<img src="${card.images.small}" alt="${card.name}">`;
+    pocket.addEventListener("click", () => {
+      editMode ? openSlotEditor(i) : openDetail(card);
+    });
+    grid.appendChild(pocket);
+  });
+
+  document.getElementById("binderTitle").textContent = page.title;
+  document.getElementById("pageIndicator").textContent =
+    `PAGE ${currentPage + 1} OF ${PAGES.length}`;
+  document.getElementById("prevPage").disabled = currentPage === 0;
+  document.getElementById("nextPage").disabled = currentPage === PAGES.length - 1;
 }
 
-.binder-spine{
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.6rem;
-  margin-bottom: 1rem;
+function openDetail(card){
+  document.getElementById("detailImg").src = card.images.large;
+  document.getElementById("detailImg").alt = card.name;
+  document.getElementById("detailName").textContent = card.name;
+  const num = card.number && card.set.printedTotal
+    ? `${card.number}/${card.set.printedTotal}`
+    : card.number || "";
+  document.getElementById("detailSet").textContent =
+    [card.set.name, num].filter(Boolean).join(" · ");
+  document.getElementById("cardDetail").classList.add("visible");
 }
-.spine-label{
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.18em;
-  color: var(--paper-dim);
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  padding: 0.4rem 1rem;
-  border-radius: 999px;
-}
-.edit-toggle{
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.1em;
-  color: var(--paper-dim);
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.1);
-  padding: 0.4rem 0.8rem;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.edit-toggle:hover{ color: var(--paper); border-color: rgba(255,255,255,0.25); }
-.edit-toggle.active{
-  color: var(--vinyl);
-  background: var(--holo-1);
-  border-color: var(--holo-1);
+
+function closeDetail(){
+  document.getElementById("cardDetail").classList.remove("visible");
 }
 
 /* ============================================
-   THE PAGE — cream cardstock, ring holes
+   SLOT EDITOR — search & place, or remove
    ============================================ */
-.binder-page{
-  position: relative;
-  background: var(--page-stock);
-  border-radius: 8px;
-  padding: 1.4rem 1.4rem 1.4rem 3.2rem;
-  box-shadow:
-    0 1px 0 rgba(255,255,255,0.5) inset,
-    0 18px 30px rgba(0,0,0,0.35);
+let searchDebounce = null;
+
+function populateFilterDropdowns(){
+  const setSel = document.getElementById("filterSet");
+  if(SETS === null){
+    setSel.innerHTML = `<option value="">Couldn't load sets — click to retry</option>`;
+    setSel.onclick = async (e) => {
+      if(setSel.selectedIndex !== 0) return; // only retry from the error state itself
+      setSel.innerHTML = `<option value="">Loading sets…</option>`;
+      SETS = await fetchSets();
+      populateFilterDropdowns();
+    };
+  } else {
+    setSel.onclick = null;
+    setSel.innerHTML = `<option value="">Any set</option>` +
+      SETS.map(s => `<option value="${s.id}">${s.name} (${s.series})</option>`).join("");
+  }
+
+  const typeSel = document.getElementById("filterType");
+  typeSel.innerHTML = `<option value="">Any type</option>` +
+    TYPES.map(t => `<option value="${t}">${t}</option>`).join("");
+
+  const raritySel = document.getElementById("filterRarity");
+  raritySel.innerHTML = `<option value="">Any rarity</option>` +
+    RARITIES.map(r => `<option value="${r}">${r}</option>`).join("");
 }
 
-.ring-holes{
-  position: absolute;
-  left: 1.1rem;
-  top: 0; bottom: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-evenly;
-  align-items: center;
-}
-.ring{
-  width: 14px; height: 14px;
-  border-radius: 50%;
-  background: var(--vinyl);
-  box-shadow: 0 1px 2px rgba(0,0,0,0.3) inset, 0 1px 0 rgba(255,255,255,0.3);
+function openSlotEditor(slotIndex){
+  editingSlotIndex = slotIndex;
+  const card = PAGES[currentPage].slots[slotIndex];
+
+  const currentWrap = document.getElementById("editorCurrent");
+  if(card){
+    currentWrap.innerHTML = `
+      <img src="${card.images.small}" alt="${card.name}">
+      <div>
+        <div class="editor-current-name">${card.name}</div>
+        <button class="editor-remove-btn" id="removeCardBtn">Remove from slot</button>
+      </div>
+    `;
+    currentWrap.style.display = "flex";
+    document.getElementById("removeCardBtn").addEventListener("click", () => {
+      PAGES[currentPage].slots[slotIndex] = null;
+      saveState();
+      renderPage();
+      closeSlotEditor();
+    });
+  } else {
+    currentWrap.style.display = "none";
+    currentWrap.innerHTML = "";
+  }
+
+  document.getElementById("filterName").value = "";
+  document.getElementById("filterSet").value = "";
+  document.getElementById("filterNumber").value = "";
+  document.getElementById("filterType").value = "";
+  document.getElementById("filterRarity").value = "";
+  document.getElementById("searchResults").innerHTML = "";
+  document.getElementById("slotEditor").classList.add("visible");
+  document.getElementById("filterName").focus();
 }
 
-.pocket-grid{
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.7rem;
+function closeSlotEditor(){
+  document.getElementById("slotEditor").classList.remove("visible");
+  editingSlotIndex = null;
+}
+
+function currentFilters(){
+  return {
+    name:   document.getElementById("filterName").value.trim(),
+    setId:  document.getElementById("filterSet").value,
+    number: document.getElementById("filterNumber").value.trim(),
+    type:   document.getElementById("filterType").value,
+    rarity: document.getElementById("filterRarity").value,
+  };
+}
+
+async function runSearch(){
+  const resultsEl = document.getElementById("searchResults");
+  const filters = currentFilters();
+
+  if(!filters.name && !filters.setId && !filters.number && !filters.type && !filters.rarity){
+    resultsEl.innerHTML = "";
+    return;
+  }
+
+  resultsEl.innerHTML = `<div class="search-status">Searching…</div>`;
+  const results = await searchCards(filters);
+
+  if(!results.length){
+    resultsEl.innerHTML = `<div class="search-status">No cards found — try loosening a filter.</div>`;
+    return;
+  }
+
+  resultsEl.innerHTML = "";
+  results.forEach(card => {
+    const item = document.createElement("div");
+    item.className = "search-result";
+    item.innerHTML = `
+      <img src="${card.images.small}" alt="${card.name}">
+      <span>${card.name} <em>${card.set.name} &middot; ${card.rarity || "—"}</em></span>
+    `;
+    item.addEventListener("click", () => {
+      PAGES[currentPage].slots[editingSlotIndex] = card;
+      saveState();
+      renderPage();
+      closeSlotEditor();
+    });
+    resultsEl.appendChild(item);
+  });
+}
+
+function triggerDebouncedSearch(){
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(runSearch, 400);
 }
 
 /* ============================================
-   POCKETS
+   PAGE MANAGEMENT
    ============================================ */
-.pocket{
-  position: relative;
-  aspect-ratio: 5 / 7;
-  border-radius: 6px;
-  overflow: hidden;
-  background: rgba(255,255,255,0.35);
-  border: 1px solid var(--pocket-line);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12) inset;
-  cursor: default;
-}
-.pocket.empty{
-  background: repeating-linear-gradient(
-    135deg,
-    rgba(43,38,32,0.04) 0 8px,
-    transparent 8px 16px
-  );
-  border: 1px dashed var(--pocket-line);
-}
-.pocket.filled{ cursor: pointer; }
-.pocket.filled:hover{ transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.25); }
-.pocket.editable{ cursor: pointer; }
-.pocket.editable:hover{
-  outline: 2px solid var(--holo-1);
-  outline-offset: -1px;
-}
-.pocket-plus{
-  position: absolute; inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-display);
-  font-size: 1.6rem;
-  color: var(--paper-dim);
-  opacity: 0.5;
-}
-.pocket img{
-  width: 100%; height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-/* holo-foil signature shimmer, only on cards flagged holo */
-.pocket.holo::after{
-  content: "";
-  position: absolute; inset: 0;
-  background: linear-gradient(
-    115deg,
-    transparent 15%,
-    var(--holo-1) 32%,
-    var(--holo-2) 50%,
-    var(--holo-3) 68%,
-    transparent 85%
-  );
-  background-size: 260% 260%;
-  mix-blend-mode: color-dodge;
-  opacity: 0.5;
-  animation: holoDrift 7s ease-in-out infinite;
-  pointer-events: none;
-}
-@keyframes holoDrift{
-  0%,100%{ background-position: 0% 20%; }
-  50%{ background-position: 100% 80%; }
-}
-@media (prefers-reduced-motion: reduce){
-  .pocket.holo::after{ animation: none; background-position: 50% 50%; }
+function addNewPage(){
+  PAGES.push({
+    title: PAGES[0]?.title || "NEW PAGE",
+    slots: [null, null, null, null, null, null, null, null, null]
+  });
+  saveState();
+  currentPage = PAGES.length - 1;
+  renderPage();
 }
 
 /* ============================================
-   NAV
+   EVENTS
    ============================================ */
-.binder-nav{
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1.2rem;
-  margin-top: 1.1rem;
-}
-.nav-btn{
-  width: 34px; height: 34px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
-  color: var(--paper);
-  font-size: 1rem;
-  cursor: pointer;
-  transition: background 0.15s ease, transform 0.1s ease;
-}
-.nav-btn:hover{ background: rgba(255,255,255,0.1); }
-.nav-btn:active{ transform: scale(0.94); }
-.nav-btn:disabled{ opacity: 0.3; cursor: default; }
-.nav-btn:disabled:hover{ background: rgba(255,255,255,0.04); }
-.page-indicator{
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  color: var(--paper-dim);
-  min-width: 9ch;
-  text-align: center;
-}
-.add-page-btn{
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.08em;
-  color: var(--paper);
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.14);
-  padding: 0.4rem 0.7rem;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.add-page-btn:hover{ background: rgba(255,255,255,0.12); }
+document.getElementById("prevPage").addEventListener("click", () => {
+  if(currentPage > 0){ currentPage--; renderPage(); }
+});
+document.getElementById("nextPage").addEventListener("click", () => {
+  if(currentPage < PAGES.length - 1){ currentPage++; renderPage(); }
+});
+
+document.getElementById("closeDetail").addEventListener("click", closeDetail);
+document.getElementById("cardDetail").addEventListener("click", (e) => {
+  if(e.target.id === "cardDetail") closeDetail();
+});
+
+document.getElementById("editToggle").addEventListener("click", () => {
+  editMode = !editMode;
+  document.getElementById("editToggle").classList.toggle("active", editMode);
+  document.getElementById("addPageBtn").style.display = editMode ? "inline-flex" : "none";
+  renderPage();
+});
+
+document.getElementById("addPageBtn").addEventListener("click", addNewPage);
+
+document.getElementById("closeSlotEditor").addEventListener("click", closeSlotEditor);
+document.getElementById("slotEditor").addEventListener("click", (e) => {
+  if(e.target.id === "slotEditor") closeSlotEditor();
+});
+
+document.getElementById("filterName").addEventListener("input", triggerDebouncedSearch);
+document.getElementById("filterNumber").addEventListener("input", triggerDebouncedSearch);
+document.getElementById("filterSet").addEventListener("change", runSearch);
+document.getElementById("filterType").addEventListener("change", runSearch);
+document.getElementById("filterRarity").addEventListener("change", runSearch);
+
+document.addEventListener("keydown", (e) => {
+  if(e.key !== "Escape") return;
+  closeDetail();
+  closeSlotEditor();
+});
 
 /* ============================================
-   CARD DETAIL OVERLAY
+   INIT
    ============================================ */
-.card-detail{
-  position: fixed; inset: 0;
-  background: rgba(20,23,28,0.82);
-  backdrop-filter: blur(6px);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  z-index: 100;
-}
-.card-detail.visible{ display: flex; }
-.card-detail-inner{
-  position: relative;
-  max-width: 360px;
-  width: 100%;
-  text-align: center;
-}
-.card-detail-inner img{
-  width: 100%;
-  border-radius: 12px;
-  box-shadow: 0 30px 60px rgba(0,0,0,0.6);
-}
-.card-detail-close{
-  position: absolute;
-  top: -2.6rem; right: 0;
-  width: 34px; height: 34px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(255,255,255,0.06);
-  color: var(--paper);
-  font-size: 1.3rem;
-  line-height: 1;
-  cursor: pointer;
-}
-.card-detail-meta{ margin-top: 1rem; }
-.card-detail-meta h2{
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 1.4rem;
-  margin: 0 0 0.2rem;
-}
-.card-detail-meta p{
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  color: var(--paper-dim);
-  margin: 0;
-}
+(async function init(){
+  document.getElementById("pageIndicator").textContent = "LOADING…";
 
-/* ============================================
-   SLOT EDITOR — search & place a card
-   ============================================ */
-.slot-editor{
-  position: fixed; inset: 0;
-  background: rgba(20,23,28,0.85);
-  backdrop-filter: blur(6px);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem 1.2rem;
-  z-index: 110;
-}
-.slot-editor.visible{ display: flex; }
-.slot-editor-inner{
-  position: relative;
-  width: 100%;
-  max-width: 380px;
-  background: var(--vinyl-raised);
-  border-radius: 14px;
-  padding: 1.6rem 1.4rem 1.4rem;
-  max-height: 80vh;
-  overflow-y: auto;
-}
-.slot-editor-title{
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 1.1rem;
-  margin: 0 0 1rem;
-}
-.editor-current{
-  display: none;
-  align-items: center;
-  gap: 0.8rem;
-  background: rgba(255,255,255,0.04);
-  border-radius: 8px;
-  padding: 0.6rem;
-  margin-bottom: 1rem;
-}
-.editor-current img{ width: 46px; border-radius: 4px; }
-.editor-current-name{
-  font-family: var(--font-body);
-  font-weight: 600;
-  font-size: 0.85rem;
-  margin-bottom: 0.3rem;
-}
-.editor-remove-btn{
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.06em;
-  color: #ff8a8a;
-  background: none;
-  border: 1px solid rgba(255,138,138,0.35);
-  padding: 0.25rem 0.6rem;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.editor-remove-btn:hover{ background: rgba(255,138,138,0.1); }
+  const [saved, sets] = await Promise.all([
+    Promise.resolve(loadState()),
+    fetchSets(),
+  ]);
+  SETS = sets;
+  populateFilterDropdowns();
 
-.search-input{
-  width: 100%;
-  font-family: var(--font-body);
-  font-size: 0.9rem;
-  color: var(--paper);
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 8px;
-  padding: 0.65rem 0.8rem;
-  margin-bottom: 0.6rem;
-}
-.search-input:focus{ outline: 2px solid var(--holo-1); outline-offset: 1px; }
-.search-input::placeholder{ color: var(--paper-dim); }
-
-.filter-grid{
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  margin-bottom: 0.9rem;
-}
-.filter-select, .filter-input{
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--paper);
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 6px;
-  padding: 0.5rem 0.5rem;
-  width: 100%;
-}
-.filter-select:focus, .filter-input:focus{ outline: 2px solid var(--holo-1); outline-offset: 1px; }
-.filter-input::placeholder{ color: var(--paper-dim); }
-.filter-select{ cursor: pointer; }
-
-/* The dropdown POPUP LIST (as opposed to the closed select box) renders
-   on a native, usually light, system background in most browsers — it
-   ignores the dark theme above. Options need their own dark text/light
-   background here so they stay readable when the list is open. */
-.filter-select option{
-  color: var(--ink);
-  background: var(--paper);
-}
-
-.search-results{
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.search-status{
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--paper-dim);
-  padding: 0.6rem 0.2rem;
-}
-.search-result{
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.4rem;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-.search-result:hover{ background: rgba(255,255,255,0.06); }
-.search-result img{ width: 36px; border-radius: 3px; flex-shrink: 0; }
-.search-result span{
-  font-family: var(--font-body);
-  font-size: 0.82rem;
-  color: var(--paper);
-}
-.search-result em{
-  display: block;
-  font-style: normal;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: var(--paper-dim);
-  margin-top: 0.15rem;
-}
-
-/* ============================================
-   RESPONSIVE
-   ============================================ */
-@media (max-width: 480px){
-  .binder{ padding: 1rem 1rem 0.9rem; }
-  .binder-page{ padding: 1.1rem 1.1rem 1.1rem 2.6rem; }
-  .pocket-grid{ gap: 0.5rem; }
-}
+  PAGES = saved && saved.length ? saved : await buildDemoPages();
+  if(!saved) saveState();
+  renderPage();
+})();
